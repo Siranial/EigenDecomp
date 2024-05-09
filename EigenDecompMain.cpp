@@ -11,6 +11,7 @@
 #include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
+#include <chrono>
 #include <time.h>
 #include <cassert>
 #include "MatrixOps.hpp"
@@ -20,7 +21,7 @@
 int main(int argc, char* argv[]) {
     clock_t seqClkStart, seqClkFinish, parClkStart, parClkFinish;
 
-    double* A, *EigVectors, *Vec, *EigValues;
+    double* B, *A, *EigVectors, *Vec, *EigValues;
     double* d_EigVectors, * d_EigValues;
     int N, i, j, ij, iterations;
 
@@ -49,31 +50,30 @@ int main(int argc, char* argv[]) {
     }
 
     // CUDA eigen decomposition and timing
-    parClkStart = clock();
+    auto pStart = std::chrono::high_resolution_clock::now();
     CUDAEigenDecomp(A, N, d_EigVectors, d_EigValues, iterations);
-    parClkFinish = clock();
+    auto pEnd = std::chrono::high_resolution_clock::now();
+    auto pDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(pEnd - pStart).count();
+    printf("par time: %lld\n", pDuration);
 
     // Sequential eigen decomposition and timing
-    seqClkStart = clock();
+    auto sStart = std::chrono::high_resolution_clock::now();
     EigenDecomposition(A, N, EigVectors, EigValues, iterations);
-    seqClkFinish = clock();
+    auto sEnd = std::chrono::high_resolution_clock::now();
+    auto sDuration = std::chrono::duration_cast<std::chrono::nanoseconds>(sEnd - sStart).count();
+    printf("seq time: %lld\n", sDuration);
 
-    // Verify computation of eigen vectors
-    MatMult(A, EigVectors, N, Vec);
-
+    
     printf("Verifying computation\n");
     for (i = 0; i < N; i++) {
         for (j = 0; j < N; j++) {
             ij = i * N + j;
+            //assert(abs(EigVectors[ij] - d_EigVectors[ij]) <= 0.0001);
             assert(abs(EigVectors[ij] - d_EigVectors[ij]) <= 0.0001);
         }
         assert(abs(EigValues[i] - d_EigValues[i]) <= 0.0001);
     }
     printf("Parallel results consistent with sequential results\n");
-    
-    // Print timing stuff
-    printf("Finished computation in seq:%lfms, par:%lfms\n", double(seqClkFinish - seqClkStart) / CLOCKS_PER_SEC * 1000.0, double(parClkFinish - parClkStart) / CLOCKS_PER_SEC * 1000.0);
-    
 
     // Free allocated data
     free(A);

@@ -9,7 +9,7 @@
  */
 
 #include "EigenDecomp.cuh"
-
+#include <chrono>
 
 void CUDAEigenDecomp(double* A, int N, double* EigVectors, double* EigValues, int iterations) {
     /*
@@ -23,7 +23,6 @@ void CUDAEigenDecomp(double* A, int N, double* EigVectors, double* EigValues, in
     *  EigValues: Destination address for eigen values
     *  iterations: iterations to use for computation
     */
-
     double* d_A, * d_EigVectors, * d_EigValues, * d_EigVals;
     const unsigned int matrixSize = sizeof(double) * N * N;
     const unsigned int vectorSize = sizeof(double) * N;
@@ -65,9 +64,9 @@ void CUDAEigenDecomp(double* A, int N, double* EigVectors, double* EigValues, in
         //Gram-Schmidt decorrelation
         for (p = 0; p < N; p++) {
             CUDACopyEigVals<<<1,grid.x>>>(d_wp, d_EigVals, N, p, 0);
-            CUDASerialNormalize<<<1,1>>>(d_wp, N);
+            CUDASerialNormalize(d_wp, N, grid.x);
             CUDAWPDecrement<<<1,N>>>(d_wp, d_Q, N, p);
-            CUDASerialNormalize<<<1,1>>>(d_wp, N);
+            CUDASerialNormalize(d_wp, N, grid.x);
 
             //Storing estimated rows of the inverse of the mixing matrix as columns in W
             CUDACopyEigVals<<<1,grid.x>>>(d_Q, d_wp, N, p, 1);
@@ -94,7 +93,7 @@ void CUDAEigenDecomp(double* A, int N, double* EigVectors, double* EigValues, in
     return;
 }
 
-__global__ void CUDASerialNormalize(double* A, int N) {
+__host__ void CUDASerialNormalize(double* d_A, int N, int numThreads) {
     /*
     * Normalizes matrix A destructively
     * Inputs:
@@ -103,14 +102,42 @@ __global__ void CUDASerialNormalize(double* A, int N) {
     */
     int i;
     double sqrtSum = 0.0;
+    double* A;
+    const size_t matSize = N * sizeof(double);
+    A = (double*) malloc(matSize);
 
-    for (i = 0; i < N; i++)
+    assert(cudaMemcpy(A, d_A, matSize, cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    for (i = 0; i < N; i++) 
         sqrtSum += A[i] * A[i];
 
     sqrtSum = sqrt(sqrtSum);
 
-    for (i = 0; i < N; i++)
-        A[i] = A[i] / sqrtSum;
+    free(A);
+
+    CUDADivideByConstant<<<1,numThreads>>>(d_A, sqrtSum, N);
+
+    return;
+}
+
+__global__ void CUDADivideByConstant(double* wp, double divisor, int N) {
+    /*
+    * Divides all elements of wp by sqsum
+    * Inputs:
+    *  wp: the vector to be divided by
+    *  divisor: the divisor
+    *  N: length of wp
+    */
+    const int startIndex = threadIdx.x * BLOCK_DIM;
+    int endIndex = startIndex + BLOCK_DIM;
+
+    if (endIndex > N) endIndex = N;
+
+    for (int i = startIndex; i < endIndex; i++) {
+        wp[i] = wp[i] / divisor;
+    }
+
+    return;
 }
 
 __global__ void CUDAMatMult(double* A, double* B, int N, double* result) {
@@ -284,79 +311,6 @@ __global__ void CUDASetEigVals(double* dest, int N, double* source) {
 
     for (int i = startIndex; i < endIndex; i++)
         dest[i] = source[i * N + i];
-
-    return;
-}
-
-
-//UNUSED FUNCTIONS
-
-__host__ void CUDANormalize(double* A, int N, int numThreads) {
-    /*
-    * Destructively normalizes the elements of A
-    * Inputs:
-    *  A: The vector to be normalized (data not preserved)
-    *  N: length of A
-    *  numThreads: number of threads to use for vector ops
-    */
-    double* d_sqSum, * sqSum;
-    double sqrtSum = 0.0;
-
-    size_t sumSize = sizeof(double) * numThreads;
-
-    sqSum = (double*)malloc(sumSize);
-    assert(cudaMalloc(&d_sqSum, sumSize) == cudaSuccess);
-
-    CUDAVecSqSum << <1, numThreads >> > (A, N, d_sqSum);
-
-    cudaDeviceSynchronize();
-
-    assert(cudaMemcpy(sqSum, d_sqSum, sumSize, cudaMemcpyDeviceToHost) == cudaSuccess);
-
-    for (int i = 0; i < numThreads; i++) {
-        sqrtSum += sqSum[i];
-    }
-
-    cudaFree(d_sqSum); free(sqSum);
-
-    sqrtSum = sqrt(sqrtSum);
-
-    CUDADivideByConstant << <1, numThreads >> > (A, sqrtSum, N);
-}
-
-__global__ void CUDAVecSqSum(double* vector, int N, double* sqSum) {
-    /*
-    * Returns the sum of vector components
-    * Inputs:
-    *  vector: the vector to be summed
-    *  N: length of vector
-    *  sqSum: destination address of square sum
-    */
-    const int startIndex = threadIdx.x * BLOCK_DIM;
-    int endIndex = startIndex + BLOCK_DIM;
-
-    if (endIndex > N) endIndex = N;
-
-    for (int i = startIndex; i < endIndex; i++)
-        sqSum[threadIdx.x] += vector[i] * vector[i];
-
-    return;
-}
-
-__global__ void CUDADivideByConstant(double* wp, double divisor, int N) {
-    /*
-    * Divides all elements of wp by sqsum
-    * Inputs:
-    *  wp: the vector to be divided by
-    *  divisor: the divisor
-    *  N: length of wp
-    */
-    const int startIndex = threadIdx.x * BLOCK_DIM;
-    const int endIndex = startIndex + BLOCK_DIM;
-
-    for (int i = startIndex; i < endIndex; i++) {
-        if (i < N) wp[i] = wp[i] / divisor;
-    }
 
     return;
 }
